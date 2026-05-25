@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>New Office Reception Map</title>
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.127/Build/Cesium/Cesium.js"></script>
+    <link
+      href="https://cesium.com/downloads/cesiumjs/releases/1.127/Build/Cesium/Widgets/widgets.css"
+      rel="stylesheet"
+    />
+    <style>
+      html,
+      body,
+      #cesiumContainer {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #0d1117;
+      }
+
+      .map-controls {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 10;
+        width: min(300px, calc(100vw - 32px));
+        padding: 12px;
+        border-radius: 6px;
+        background: rgba(10, 16, 24, 0.88);
+        color: #f5f7fb;
+        font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      }
+
+      .map-controls h2 {
+        margin: 0 0 10px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .map-button-group {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .control-label {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 12px;
+        color: #aeb8c8;
+      }
+
+      .control-value {
+        color: #f5f7fb;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .map-button {
+        min-height: 32px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #f5f7fb;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .map-button:hover,
+      .map-button.active {
+        background: rgba(255, 255, 255, 0.14);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="cesiumContainer"></div>
+    <section class="map-controls" aria-label="Map controls">
+      <h2>Map View</h2>
+      <div class="map-button-group">
+        <button class="map-button active" id="satelliteBasemapButton" type="button">Satellite</button>
+        <button class="map-button" id="osmBasemapButton" type="button">OSM</button>
+      </div>
+      
+      <div style="margin-top:8px; display:flex; gap:8px;">
+        <button id="fullBuildingButton" class="map-button" type="button">Full Building</button>
+        <button id="receptionButton" class="map-button active" type="button">Reception Area</button>
+      </div>
+      <label class="control-label" for="overlayOpacitySlider">
+        <span>Overlay Transparency</span>
+        <span class="control-value" id="overlayOpacityValue">50%</span>
+      </label>
+      <input id="overlayOpacitySlider" type="range" min="0" max="1" step="0.01" value="0.5" style="width:100%" />
+    </section>
+    <div id="cinematicOverlay" style="pointer-events:none; position:fixed; inset:0; z-index:20; mix-blend-mode:normal; transition:opacity 700ms ease, backdrop-filter 700ms ease; opacity:0;"></div>
+    <script>
+      const latitude = 28.68045859933207;
+      const longitude = 77.14402388118387;
+      let height = 8;
+      let modelScale = 3;
+      let modelRotationDegrees = 0;
+      // separate scale/rotation for the full building model so it can be tuned independently
+      let fullBuildingScale = 1.8;
+      let fullBuildingRotationDegrees = 0;
+      const defaultViewStorageKey = "newOfficeReceptionDefaultView";
+      // Camera presets for buttons
+      // default presets; may be overridden by saved presets in localStorage
+      function loadSavedPreset(key, fallback) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) return fallback;
+          const p = JSON.parse(raw);
+          return {
+            destination: new Cesium.Cartesian3(p.x, p.y, p.z),
+            orientation: { heading: p.heading, pitch: p.pitch, roll: p.roll },
+          };
+        } catch (e) {
+          return fallback;
+        }
+      }
+
+      const receptionDefault = {
+        x: null,
+      };
+
+      const receptionPresetFallback = {
+        destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 40),
+        orientation: {
+          heading: Cesium.Math.toRadians(180),
+          pitch: Cesium.Math.toRadians(-50),
+          roll: 0,
+        },
+      };
+      const fullPresetFallback = {
+        destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 140),
+        orientation: {
+          heading: Cesium.Math.toRadians(15),
+          pitch: Cesium.Math.toRadians(-30),
+          roll: 0,
+        },
+      };
+
+      // expose helpers so you can set presets from the browser console:
+      // run `saveFullPreset()` or `saveReceptionPreset()` after positioning the camera
+      window.saveFullPreset = function() {
+        const cam = viewer.camera;
+        const val = { x: cam.positionWC.x, y: cam.positionWC.y, z: cam.positionWC.z, heading: cam.heading, pitch: cam.pitch, roll: cam.roll };
+        localStorage.setItem('fullBuildingView', JSON.stringify(val));
+        console.log('Saved fullBuildingView');
+      };
+      window.saveReceptionPreset = function() {
+        const cam = viewer.camera;
+        const val = { x: cam.positionWC.x, y: cam.positionWC.y, z: cam.positionWC.z, heading: cam.heading, pitch: cam.pitch, roll: cam.roll };
+        localStorage.setItem('receptionView', JSON.stringify(val));
+        console.log('Saved receptionView');
+      };
+
+      // helper to save the current camera as the front-facing reception view
+      window.setReceptionFront = function() {
+        const cam = viewer.camera;
+        const val = { x: cam.positionWC.x, y: cam.positionWC.y, z: cam.positionWC.z, heading: cam.heading, pitch: cam.pitch, roll: cam.roll };
+        localStorage.setItem('receptionView', JSON.stringify(val));
+        console.log('Saved receptionView (front-facing)');
+      };
+
+      // load any saved presets
+      const receptionPreset = loadSavedPreset('receptionView', receptionPresetFallback);
+      const fullPreset = loadSavedPreset('fullBuildingView', fullPresetFallback);
+
+      Cesium.Ion.defaultAccessToken = "";
+
+      const viewer = new Cesium.Viewer("cesiumContainer", {
+        animation: false,
+        baseLayerPicker: false,
+        fullscreenButton: true,
+        geocoder: false,
+        homeButton: true,
+        sceneModePicker: false,
+        selectionIndicator: false,
+        timeline: false,
+        navigationHelpButton: false,
+        infoBox: false,
+        baseLayer: new Cesium.ImageryLayer(
+          new Cesium.OpenStreetMapImageryProvider({
+            url: "https://tile.openstreetmap.org/",
+            maximumLevel: 19,
+          })
+        ),
+      });
+
+      // Overlay opacity state
+      let overlayOpacity = 0.5;
+      let overlayBaseCoords = [];
+
+      function getOverlayPositions() {
+        return overlayBaseCoords.map((coord) => Cesium.Cartesian3.fromDegrees(coord[0], coord[1], 0));
+      }
+
+      viewer.resolutionScale = Math.min(window.devicePixelRatio || 1, 2);
+      viewer.scene.fxaa = true;
+      viewer.scene.msaaSamples = 4;
+      viewer.scene.globe.depthTestAgainstTerrain = false;
+      viewer.scene.globe.enableLighting = false;
+      viewer.scene.skyAtmosphere.show = true;
+      viewer.scene.screenSpaceCameraController.minimumZoomDistance = 2;
+      viewer.shadows = false;
+      if (viewer.scene.shadowMap) {
+        viewer.scene.shadowMap.enabled = false;
+      }
+
+      // Satellite imagery provider (Esri World Imagery)
+      let satProvider = new Cesium.UrlTemplateImageryProvider({
+        url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        credit: 'Esri World Imagery',
+        maximumLevel: 19,
+      });
+
+      let satLayer = viewer.imageryLayers.addImageryProvider(satProvider);
+      satLayer.show = true;
+
+      const satelliteBasemapButton = document.getElementById('satelliteBasemapButton');
+      const osmBasemapButton = document.getElementById('osmBasemapButton');
+
+      function setBasemap(mode) {
+        const useSatellite = mode === 'satellite';
+        satLayer.show = useSatellite;
+        if (satelliteBasemapButton) satelliteBasemapButton.classList.toggle('active', useSatellite);
+        if (osmBasemapButton) osmBasemapButton.classList.toggle('active', !useSatellite);
+      }
+
+      if (satelliteBasemapButton) {
+        satelliteBasemapButton.addEventListener('click', () => setBasemap('satellite'));
+      }
+
+      if (osmBasemapButton) {
+        osmBasemapButton.addEventListener('click', () => setBasemap('osm'));
+      }
+
+      const modelPositionProperty = new Cesium.CallbackProperty(
+        () => Cesium.Cartesian3.fromDegrees(longitude, latitude, height),
+        false
+      );
+      const position = Cesium.Cartesian3.fromDegrees(longitude, latitude, height);
+      const modelOrientationProperty = new Cesium.CallbackProperty(
+        () =>
+          Cesium.Transforms.headingPitchRollQuaternion(
+            Cesium.Cartesian3.fromDegrees(longitude, latitude, height),
+            new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(modelRotationDegrees), 0, 0)
+          ),
+        false
+      );
+
+      const officeModel = viewer.entities.add({
+        name: "New Office Reception",
+        position: modelPositionProperty,
+        orientation: modelOrientationProperty,
+        model: {
+          uri: "new_office_reception_final.glb",
+          scale: new Cesium.CallbackProperty(() => modelScale, false),
+          minimumPixelSize: 0,
+          maximumScale: modelScale,
+          heightReference: Cesium.HeightReference.NONE,
+          backFaceCulling: false,
+          shadows: Cesium.ShadowMode.DISABLED,
+        },
+      });
+
+      const fullBuildingModel = viewer.entities.add({
+        name: "New Office Full Building",
+        position: modelPositionProperty,
+        orientation: modelOrientationProperty,
+        model: {
+          uri: "Office_full_building_draco.glb",
+          scale: new Cesium.CallbackProperty(() => fullBuildingScale, false),
+          minimumPixelSize: 0,
+          maximumScale: fullBuildingScale,
+          heightReference: Cesium.HeightReference.NONE,
+          backFaceCulling: false,
+          shadows: Cesium.ShadowMode.DISABLED,
+        },
+      });
+
+      let loadedOfficeModels = [officeModel, fullBuildingModel];
+
+      // default: show reception only
+      try {
+        fullBuildingModel.show = false;
+        officeModel.show = true;
+        loadedOfficeModels = [officeModel];
+      } catch (e) {
+        // ignore if entities not ready yet
+      }
+
+      function showModel(which) {
+        if (which === 'full') {
+          fullBuildingModel.show = true;
+          officeModel.show = false;
+          loadedOfficeModels = [fullBuildingModel];
+          const fbBtn = document.getElementById('fullBuildingButton');
+          const rBtn = document.getElementById('receptionButton');
+          if (fbBtn) fbBtn.classList.add('active');
+          if (rBtn) rBtn.classList.remove('active');
+          // Use the same camera target as the Home button (saved default view) if available
+          const saved = getDefaultView();
+          if (saved) {
+            viewer.camera.flyTo({ ...saved, duration: 0.9 });
+          } else {
+            viewer.camera.flyTo({ destination: fullPreset.destination, orientation: fullPreset.orientation, duration: 0.9 });
+          }
+        } else {
+          // reception
+          fullBuildingModel.show = false;
+          officeModel.show = true;
+          loadedOfficeModels = [officeModel];
+          const fbBtn = document.getElementById('fullBuildingButton');
+          const rBtn = document.getElementById('receptionButton');
+          if (fbBtn) fbBtn.classList.remove('active');
+          if (rBtn) rBtn.classList.add('active');
+          // Use the same saved/default Home camera when available, otherwise fall back
+          const saved = getDefaultView();
+          if (saved) {
+            viewer.camera.flyTo({ ...saved, duration: 0.9 });
+          } else {
+            viewer.camera.flyTo({ destination: receptionPreset.destination, orientation: receptionPreset.orientation, duration: 0.9 });
+          }
+        }
+      }
+
+      function wireModelButtons() {
+        const fbBtn = document.getElementById('fullBuildingButton');
+        const rBtn = document.getElementById('receptionButton');
+        if (fbBtn) fbBtn.addEventListener('click', () => showModel('full'));
+        if (rBtn) rBtn.addEventListener('click', () => {
+          // If full building is currently visible, do a cinematic fly-through
+          if (fullBuildingModel.show) {
+            playCinematicEntrance().catch((e) => console.error(e));
+          } else {
+            showModel('reception');
+          }
+        });
+      }
+
+      // Cinematic transition: exterior full building -> approach entrance -> pass through doors -> interior reception
+      function setCinematicOverlay(active) {
+        const el = document.getElementById('cinematicOverlay');
+        if (!el) return;
+        if (active) {
+          el.style.backdropFilter = 'blur(6px)';
+          el.style.background = 'rgba(6,8,10,0.06)';
+          el.style.opacity = '1';
+        } else {
+          el.style.backdropFilter = 'none';
+          el.style.background = 'transparent';
+          el.style.opacity = '0';
+        }
+      }
+
+      async function playCinematicEntrance() {
+        try {
+          // disable UI briefly
+          document.querySelectorAll('.map-button').forEach(b => b.disabled = true);
+          setCinematicOverlay(true);
+
+          // preserve current camera as start
+          const cam = viewer.camera;
+
+          // compute approach, door and interior targets
+          const approach = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 80);
+          const doorOutside = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 8);
+          const interiorTarget = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 2);
+
+          // approach orientation (slightly tilted down)
+          // face the front facade (180°) for a frontal approach like the provided video
+          const approachOrientation = { heading: Cesium.Math.toRadians(180), pitch: Cesium.Math.toRadians(-25), roll: 0 };
+          const doorOrientation = { heading: Cesium.Math.toRadians(180), pitch: Cesium.Math.toRadians(-10), roll: 0 };
+          const interiorOrientation = { heading: Cesium.Math.toRadians(180), pitch: Cesium.Math.toRadians(-6), roll: 0 };
+
+          // slow cinematic fly-in to approach
+          await viewer.camera.flyTo({ destination: approach, orientation: approachOrientation, duration: 2.6, easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT });
+
+          // closer approach toward doors
+          await viewer.camera.flyTo({ destination: doorOutside, orientation: doorOrientation, duration: 2.0, easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT });
+
+          // small pause to simulate doors opening (could tie into model animation if available)
+          await new Promise(r => setTimeout(r, 350));
+
+          // move camera slightly forward through the doorway while cross-fading model visibility
+          // first move camera a little past the door exterior
+          const justInside = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 1.6);
+          await viewer.camera.flyTo({ destination: justInside, orientation: doorOrientation, duration: 0.9, easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT });
+
+          // switch models: show interior, hide exterior for seamless reveal
+          try {
+            fullBuildingModel.show = false;
+            officeModel.show = true;
+            loadedOfficeModels = [officeModel];
+          } catch (e) {
+            console.warn('Model visibility switch failed', e);
+          }
+
+          // finalize fly to an interior cinematic reveal position
+          await viewer.camera.flyTo({ destination: interiorTarget, orientation: interiorOrientation, duration: 1.1, easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT });
+
+          // short slow out
+          setTimeout(() => {
+            setCinematicOverlay(false);
+            document.querySelectorAll('.map-button').forEach(b => b.disabled = false);
+            // ensure UI reflects reception view
+            const fbBtn = document.getElementById('fullBuildingButton');
+            const rBtn = document.getElementById('receptionButton');
+            if (fbBtn) fbBtn.classList.remove('active');
+            if (rBtn) rBtn.classList.add('active');
+          }, 350);
+        } catch (err) {
+          setCinematicOverlay(false);
+          document.querySelectorAll('.map-button').forEach(b => b.disabled = false);
+          throw err;
+        }
+      }
+
+      function getDefaultView() {
+        const savedView = localStorage.getItem(defaultViewStorageKey);
+        if (!savedView) {
+          return null;
+        }
+
+        try {
+          const parsed = JSON.parse(savedView);
+          return {
+            destination: new Cesium.Cartesian3(parsed.x, parsed.y, parsed.z),
+            orientation: {
+              heading: parsed.heading,
+              pitch: parsed.pitch,
+              roll: parsed.roll,
+            },
+          };
+        } catch {
+          localStorage.removeItem(defaultViewStorageKey);
+          return null;
+        }
+      }
+
+      function flyToDefaultView() {
+        const savedDefaultView = getDefaultView();
+        if (savedDefaultView) {
+          viewer.camera.flyTo({
+            ...savedDefaultView,
+            duration: 0.8,
+          });
+          return;
+        }
+
+        viewer.zoomTo(
+          loadedOfficeModels,
+          new Cesium.HeadingPitchRange(
+            Cesium.Math.toRadians(0),
+            Cesium.Math.toRadians(-35),
+            120
+          )
+        );
+      }
+
+      // Wire up the viewer home button and the UI home controls to use the saved default view
+      function wireHomeButtons() {
+        // Hijack the Cesium home button in the widget and route it to flyToDefaultView.
+        // The Set Home / Go Home UI buttons were removed per user request.
+        setTimeout(() => {
+          const homeBtn = document.querySelector('.cesium-home-button');
+          if (homeBtn) {
+            homeBtn.addEventListener('click', (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              flyToDefaultView();
+            });
+          }
+        }, 500);
+      }
+
+      function moveModelHeight(deltaMeters) {
+        height = Math.max(0, height + deltaMeters);
+      }
+
+      function captureDefaultView() {
+        const camera = viewer.camera;
+        localStorage.setItem(
+          defaultViewStorageKey,
+          JSON.stringify({
+            x: camera.positionWC.x,
+            y: camera.positionWC.y,
+            z: camera.positionWC.z,
+            heading: camera.heading,
+            pitch: camera.pitch,
+            roll: camera.roll,
+          })
+        );
+      }
+
+      function stretchModel(deltaScale) {
+        modelScale = Math.max(0.1, modelScale + deltaScale);
+      }
+
+      function rotateModel(deltaDegrees) {
+        modelRotationDegrees = (modelRotationDegrees + deltaDegrees) % 360;
+        if (modelRotationDegrees < 0) {
+          modelRotationDegrees += 360;
+        }
+      }
+
+      // apply full-building rotation if needed (keeps same origin as other model orientation)
+      function rotateFullBuilding(deltaDegrees) {
+        fullBuildingRotationDegrees = (fullBuildingRotationDegrees + deltaDegrees) % 360;
+        if (fullBuildingRotationDegrees < 0) fullBuildingRotationDegrees += 360;
+      }
+      // Load georeference file and create a textured polygon overlay that matches the TIFF
+      (async function loadGeoOverlay() {
+        try {
+          const resp = await fetch('overlay_geo.json');
+          if (!resp.ok) throw new Error('overlay_geo.json not found');
+          const body = await resp.json();
+          const coords = body.coords; // array of [lon,lat]
+          if (!coords || coords.length < 4) throw new Error('invalid coords');
+          overlayBaseCoords = coords.map((coord) => [coord[0], coord[1]]);
+
+          // remove any existing overlay
+          const existing = viewer.entities.values.find(e => e && e.name === 'Plan Overlay');
+          if (existing) viewer.entities.remove(existing);
+
+          // create positions from coords
+          const positions = getOverlayPositions();
+
+          const overlayEntity = viewer.entities.add({
+            id: 'plan-overlay-entity',
+            name: 'Plan Overlay',
+            polygon: {
+              hierarchy: new Cesium.PolygonHierarchy(positions),
+              material: new Cesium.ImageMaterialProperty({
+                image: 'plan_overlay_from_tif.png',
+                transparent: true,
+                color: new Cesium.Color(1.0, 1.0, 1.0, overlayOpacity),
+              }),
+              // clamp to ground so it sits exactly on the basemap
+              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+              perPositionHeight: false,
+            },
+          });
+
+          window.__planOverlayEntity = overlayEntity;
+          // ensure sliders update the overlay in real-time
+          const slider = document.getElementById('overlayOpacitySlider');
+          const label = document.getElementById('overlayOpacityValue');
+          if (slider) {
+            slider.value = overlayOpacity;
+            if (label) label.textContent = `${Math.round(overlayOpacity * 100)}%`;
+            slider.addEventListener('input', (ev) => {
+              overlayOpacity = parseFloat(ev.target.value);
+              if (label) label.textContent = `${Math.round(overlayOpacity * 100)}%`;
+              if (window.__planOverlayEntity) {
+                window.__planOverlayEntity.polygon.material = new Cesium.ImageMaterialProperty({
+                  image: 'plan_overlay_from_tif.png',
+                  transparent: true,
+                  color: new Cesium.Color(1.0, 1.0, 1.0, overlayOpacity),
+                });
+              }
+            });
+          }
+        } catch (e) {
+          console.error('Failed to load geo overlay', e);
+        }
+      })();
+
+      // wire up home controls, model buttons, and then go to the saved/default view
+      wireHomeButtons();
+      wireModelButtons();
+      flyToDefaultView();
+    </script>
+  </body>
+</html>
