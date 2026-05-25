@@ -85,8 +85,8 @@
       </div>
       
       <div style="margin-top:8px; display:flex; gap:8px;">
-        <button id="fullBuildingButton" class="map-button" type="button">Full Building</button>
-        <button id="receptionButton" class="map-button active" type="button">Reception Area</button>
+        <button id="fullBuildingButton" class="map-button active" type="button">Full Building</button>
+        <button id="receptionButton" class="map-button" type="button">Reception Area</button>
       </div>
       <label class="control-label" for="overlayOpacitySlider">
         <span>Overlay Transparency</span>
@@ -126,19 +126,27 @@
       };
 
       const receptionPresetFallback = {
-        destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 40),
+        destination: new Cesium.Cartesian3(
+          1246002.0419595675,
+          5459538.645581074,
+          3042895.9591689906
+        ),
         orientation: {
-          heading: Cesium.Math.toRadians(180),
-          pitch: Cesium.Math.toRadians(-50),
-          roll: 0,
+          heading: 2.3821728099623094,
+          pitch: -0.16642275800838835,
+          roll: 5.220819740969773e-7,
         },
       };
       const fullPresetFallback = {
-        destination: Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 140),
+        destination: new Cesium.Cartesian3(
+          1246115.5199213265,
+          5459485.953240598,
+          3043026.554890215
+        ),
         orientation: {
-          heading: Cesium.Math.toRadians(15),
-          pitch: Cesium.Math.toRadians(-30),
-          roll: 0,
+          heading: 2.288275198026951,
+          pitch: -0.08604693867800273,
+          roll: 0.000002908026547565612,
         },
       };
 
@@ -166,8 +174,8 @@
       };
 
       // load any saved presets
-      const receptionPreset = loadSavedPreset('receptionView', receptionPresetFallback);
-      const fullPreset = loadSavedPreset('fullBuildingView', fullPresetFallback);
+      const receptionPreset = receptionPresetFallback;
+      const fullPreset = fullPresetFallback;
 
       Cesium.Ion.defaultAccessToken = "";
 
@@ -284,11 +292,11 @@
 
       let loadedOfficeModels = [officeModel, fullBuildingModel];
 
-      // default: show reception only
+      // default: show the full building first
       try {
-        fullBuildingModel.show = false;
-        officeModel.show = true;
-        loadedOfficeModels = [officeModel];
+        fullBuildingModel.show = true;
+        officeModel.show = false;
+        loadedOfficeModels = [fullBuildingModel];
       } catch (e) {
         // ignore if entities not ready yet
       }
@@ -302,13 +310,7 @@
           const rBtn = document.getElementById('receptionButton');
           if (fbBtn) fbBtn.classList.add('active');
           if (rBtn) rBtn.classList.remove('active');
-          // Use the same camera target as the Home button (saved default view) if available
-          const saved = getDefaultView();
-          if (saved) {
-            viewer.camera.flyTo({ ...saved, duration: 0.9 });
-          } else {
-            viewer.camera.flyTo({ destination: fullPreset.destination, orientation: fullPreset.orientation, duration: 0.9 });
-          }
+          viewer.camera.flyTo({ destination: fullPreset.destination, orientation: fullPreset.orientation, duration: 0.9 });
         } else {
           // reception
           fullBuildingModel.show = false;
@@ -318,13 +320,7 @@
           const rBtn = document.getElementById('receptionButton');
           if (fbBtn) fbBtn.classList.remove('active');
           if (rBtn) rBtn.classList.add('active');
-          // Use the same saved/default Home camera when available, otherwise fall back
-          const saved = getDefaultView();
-          if (saved) {
-            viewer.camera.flyTo({ ...saved, duration: 0.9 });
-          } else {
-            viewer.camera.flyTo({ destination: receptionPreset.destination, orientation: receptionPreset.orientation, duration: 0.9 });
-          }
+          viewer.camera.flyTo({ destination: receptionPreset.destination, orientation: receptionPreset.orientation, duration: 0.9 });
         }
       }
 
@@ -367,15 +363,15 @@
           const cam = viewer.camera;
 
           // compute approach, door and interior targets
-          const approach = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 80);
-          const doorOutside = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 8);
-          const interiorTarget = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 2);
+          const approach = fullPreset.destination;
+          const doorOutside = Cesium.Cartesian3.fromDegrees(longitude, latitude, height + 10);
+          const interiorTarget = receptionPreset.destination;
 
           // approach orientation (slightly tilted down)
           // face the front facade (180°) for a frontal approach like the provided video
-          const approachOrientation = { heading: Cesium.Math.toRadians(180), pitch: Cesium.Math.toRadians(-25), roll: 0 };
-          const doorOrientation = { heading: Cesium.Math.toRadians(180), pitch: Cesium.Math.toRadians(-10), roll: 0 };
-          const interiorOrientation = { heading: Cesium.Math.toRadians(180), pitch: Cesium.Math.toRadians(-6), roll: 0 };
+          const approachOrientation = fullPreset.orientation;
+          const doorOrientation = { heading: receptionPreset.orientation.heading, pitch: Cesium.Math.toRadians(-8), roll: receptionPreset.orientation.roll };
+          const interiorOrientation = receptionPreset.orientation;
 
           // slow cinematic fly-in to approach
           await viewer.camera.flyTo({ destination: approach, orientation: approachOrientation, duration: 2.6, easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT });
@@ -573,7 +569,7 @@
       // wire up home controls, model buttons, and then go to the saved/default view
       wireHomeButtons();
       wireModelButtons();
-      flyToDefaultView();
+      showModel('full');
     </script>
   </body>
 </html>
