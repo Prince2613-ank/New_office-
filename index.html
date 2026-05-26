@@ -190,6 +190,7 @@
         timeline: false,
         navigationHelpButton: false,
         infoBox: false,
+        useBrowserRecommendedResolution: false,
         baseLayer: new Cesium.ImageryLayer(
           new Cesium.OpenStreetMapImageryProvider({
             url: "https://tile.openstreetmap.org/",
@@ -272,6 +273,8 @@
           heightReference: Cesium.HeightReference.NONE,
           backFaceCulling: false,
           shadows: Cesium.ShadowMode.DISABLED,
+          imageBasedLightingFactor: new Cesium.Cartesian2(0, 0),
+          lightColor: Cesium.Color.WHITE,
         },
       });
 
@@ -287,6 +290,8 @@
           heightReference: Cesium.HeightReference.NONE,
           backFaceCulling: false,
           shadows: Cesium.ShadowMode.DISABLED,
+          imageBasedLightingFactor: new Cesium.Cartesian2(0, 0),
+          lightColor: Cesium.Color.WHITE,
         },
       });
 
