@@ -105,6 +105,8 @@
       let fullBuildingScale = 1.8;
       let fullBuildingRotationDegrees = 0;
       const defaultViewStorageKey = "newOfficeReceptionDefaultView";
+      const receptionModelUri = "new_office_reception_final.glb";
+      const fullBuildingModelUri = "full_building_draco_hq.glb";
       // Camera presets for buttons
       // default presets; may be overridden by saved presets in localStorage
       function loadSavedPreset(key, fallback) {
@@ -191,12 +193,9 @@
         navigationHelpButton: false,
         infoBox: false,
         useBrowserRecommendedResolution: false,
-        baseLayer: new Cesium.ImageryLayer(
-          new Cesium.OpenStreetMapImageryProvider({
-            url: "https://tile.openstreetmap.org/",
-            maximumLevel: 19,
-          })
-        ),
+        baseLayer: false,
+        requestRenderMode: true,
+        maximumRenderTimeChange: Infinity,
       });
 
       // Overlay opacity state
@@ -228,15 +227,27 @@
 
       let satLayer = viewer.imageryLayers.addImageryProvider(satProvider);
       satLayer.show = true;
+      let osmLayer = null;
 
       const satelliteBasemapButton = document.getElementById('satelliteBasemapButton');
       const osmBasemapButton = document.getElementById('osmBasemapButton');
 
       function setBasemap(mode) {
         const useSatellite = mode === 'satellite';
+        if (!useSatellite && !osmLayer) {
+          osmLayer = viewer.imageryLayers.addImageryProvider(
+            new Cesium.OpenStreetMapImageryProvider({
+              url: "https://tile.openstreetmap.org/",
+              maximumLevel: 19,
+            })
+          );
+          viewer.imageryLayers.lowerToBottom(osmLayer);
+        }
         satLayer.show = useSatellite;
+        if (osmLayer) osmLayer.show = !useSatellite;
         if (satelliteBasemapButton) satelliteBasemapButton.classList.toggle('active', useSatellite);
         if (osmBasemapButton) osmBasemapButton.classList.toggle('active', !useSatellite);
+        viewer.scene.requestRender();
       }
 
       if (satelliteBasemapButton) {
@@ -261,56 +272,62 @@
         false
       );
 
-      const officeModel = viewer.entities.add({
-        name: "New Office Reception",
-        position: modelPositionProperty,
-        orientation: modelOrientationProperty,
-        model: {
-          uri: "new_office_reception_final.glb",
-          scale: new Cesium.CallbackProperty(() => modelScale, false),
-          minimumPixelSize: 0,
-          maximumScale: modelScale,
-          heightReference: Cesium.HeightReference.NONE,
-          backFaceCulling: false,
-          shadows: Cesium.ShadowMode.DISABLED,
-          imageBasedLightingFactor: new Cesium.Cartesian2(0, 0),
-          lightColor: Cesium.Color.WHITE,
-        },
-      });
+      let officeModel = null;
 
-      const fullBuildingModel = viewer.entities.add({
-        name: "New Office Full Building",
-        position: modelPositionProperty,
-        orientation: modelOrientationProperty,
-        model: {
-          uri: "full_building.glb",
-          scale: new Cesium.CallbackProperty(() => fullBuildingScale, false),
-          minimumPixelSize: 0,
-          maximumScale: fullBuildingScale,
-          heightReference: Cesium.HeightReference.NONE,
-          backFaceCulling: false,
-          shadows: Cesium.ShadowMode.DISABLED,
-          imageBasedLightingFactor: new Cesium.Cartesian2(0, 0),
-          lightColor: Cesium.Color.WHITE,
-        },
-      });
-
-      let loadedOfficeModels = [officeModel, fullBuildingModel];
-
-      // default: show the full building first
-      try {
-        fullBuildingModel.show = true;
+      function getOfficeModel() {
+        if (officeModel) return officeModel;
+        officeModel = viewer.entities.add({
+          name: "New Office Reception",
+          position: modelPositionProperty,
+          orientation: modelOrientationProperty,
+          model: {
+            uri: receptionModelUri,
+            scale: new Cesium.CallbackProperty(() => modelScale, false),
+            minimumPixelSize: 0,
+            maximumScale: modelScale,
+            heightReference: Cesium.HeightReference.NONE,
+            backFaceCulling: false,
+            shadows: Cesium.ShadowMode.DISABLED,
+            imageBasedLightingFactor: new Cesium.Cartesian2(0, 0),
+            lightColor: Cesium.Color.WHITE,
+          },
+        });
         officeModel.show = false;
-        loadedOfficeModels = [fullBuildingModel];
-      } catch (e) {
-        // ignore if entities not ready yet
+        return officeModel;
       }
+
+      let fullBuildingModel = null;
+
+      function getFullBuildingModel() {
+        if (fullBuildingModel) return fullBuildingModel;
+        fullBuildingModel = viewer.entities.add({
+          name: "New Office Full Building",
+          position: modelPositionProperty,
+          orientation: modelOrientationProperty,
+          model: {
+            uri: fullBuildingModelUri,
+            scale: new Cesium.CallbackProperty(() => fullBuildingScale, false),
+            minimumPixelSize: 0,
+            maximumScale: fullBuildingScale,
+            heightReference: Cesium.HeightReference.NONE,
+            backFaceCulling: false,
+            shadows: Cesium.ShadowMode.DISABLED,
+            imageBasedLightingFactor: new Cesium.Cartesian2(0, 0),
+            lightColor: Cesium.Color.WHITE,
+          },
+        });
+        fullBuildingModel.show = false;
+        return fullBuildingModel;
+      }
+
+      let loadedOfficeModels = [];
 
       function showModel(which) {
         if (which === 'full') {
-          fullBuildingModel.show = true;
-          officeModel.show = false;
-          loadedOfficeModels = [fullBuildingModel];
+          const fullModel = getFullBuildingModel();
+          fullModel.show = true;
+          if (officeModel) officeModel.show = false;
+          loadedOfficeModels = [fullModel];
           const fbBtn = document.getElementById('fullBuildingButton');
           const rBtn = document.getElementById('receptionButton');
           if (fbBtn) fbBtn.classList.add('active');
@@ -318,9 +335,10 @@
           viewer.camera.flyTo({ destination: fullPreset.destination, orientation: fullPreset.orientation, duration: 0.9 });
         } else {
           // reception
-          fullBuildingModel.show = false;
-          officeModel.show = true;
-          loadedOfficeModels = [officeModel];
+          const receptionModel = getOfficeModel();
+          if (fullBuildingModel) fullBuildingModel.show = false;
+          receptionModel.show = true;
+          loadedOfficeModels = [receptionModel];
           const fbBtn = document.getElementById('fullBuildingButton');
           const rBtn = document.getElementById('receptionButton');
           if (fbBtn) fbBtn.classList.remove('active');
@@ -335,7 +353,7 @@
         if (fbBtn) fbBtn.addEventListener('click', () => showModel('full'));
         if (rBtn) rBtn.addEventListener('click', () => {
           // If full building is currently visible, do a cinematic fly-through
-          if (fullBuildingModel.show) {
+          if (fullBuildingModel && fullBuildingModel.show) {
             playCinematicEntrance().catch((e) => console.error(e));
           } else {
             showModel('reception');
@@ -394,9 +412,10 @@
 
           // switch models: show interior, hide exterior for seamless reveal
           try {
-            fullBuildingModel.show = false;
-            officeModel.show = true;
-            loadedOfficeModels = [officeModel];
+            if (fullBuildingModel) fullBuildingModel.show = false;
+            const receptionModel = getOfficeModel();
+            receptionModel.show = true;
+            loadedOfficeModels = [receptionModel];
           } catch (e) {
             console.warn('Model visibility switch failed', e);
           }
@@ -454,7 +473,7 @@
         }
 
         viewer.zoomTo(
-          loadedOfficeModels,
+          loadedOfficeModels.length ? loadedOfficeModels : [getFullBuildingModel()],
           new Cesium.HeadingPitchRange(
             Cesium.Math.toRadians(0),
             Cesium.Math.toRadians(-35),
@@ -574,7 +593,11 @@
       // wire up home controls, model buttons, and then go to the saved/default view
       wireHomeButtons();
       wireModelButtons();
-      showModel('full');
+      viewer.camera.setView({
+        destination: fullPreset.destination,
+        orientation: fullPreset.orientation,
+      });
+      window.setTimeout(() => showModel('full'), 800);
     </script>
   </body>
 </html>
